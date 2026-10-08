@@ -178,7 +178,7 @@ def example():
     return {
         "buses": [{"ID": 1, "Название": "Bus 1", "Uном, кВ": 20.0}, {"ID": 2, "Название": "Bus 2", "Uном, кВ": 0.4}, {"ID": 3, "Название": "Bus 3", "Uном, кВ": 0.4}],
         "grid": [{"Узел": 1, "U, о.е.": 1.02, "Sкз max, МВА": 500.0, "R/X сети": 0.1}],
-        "lines": [{"Название": "Линия 1", "Начало": 2, "Конец": 3, "L, км": 0.1, "R, Ом/км": 0.642, "X, Ом/км": 0.083, "C, нФ/км": 210.0, "Imax, А": 142.0}],
+        "lines": [{"Название": "Линия 1", "Начало": 2, "Конец": 3, "L, км": 0.1, "Режим": "Авто", "Материал": "Алюминий", "R, Ом/км": 0.642, "X, Ом/км": 0.083, "C, нФ/км": 210.0, "Imax, А": 142.0}],
         "trafos": [{"Название": "Трансформатор 1", "ВН": 1, "НН": 2, "Тип": "0.4 MVA 20/0.4 kV"}],
         "trafos3w": [],
         "loads": [{"Название": "Нагрузка 1", "Узел": 3, "P, кВт": 100.0, "Q, квар": 50.0}],
@@ -188,13 +188,114 @@ def example():
 COLUMNS = {
     "buses": ["ID", "Название", "Uном, кВ"],
     "grid": ["Узел", "U, о.е.", "Sкз max, МВА", "R/X сети"],
-    "lines": ["Название", "Начало", "Конец", "L, км", "R, Ом/км", "X, Ом/км", "C, нФ/км", "Imax, А"],
+    "lines": ["Название", "Начало", "Конец", "L, км", "Режим", "Материал", "R, Ом/км", "X, Ом/км", "C, нФ/км", "Imax, А"],
     "trafos": ["Название", "ВН", "НН", "Тип"],
     "trafos3w": ["Название", "ВН", "СН", "НН", "Тип"],
     "loads": ["Название", "Узел", "P, кВт", "Q, квар"],
     "generation": ["Название", "Узел", "P, кВт", "Q, квар"],
 }
 GRID_DEFAULTS = {"Sкз max, МВА": 500.0, "R/X сети": 0.1}
+LINE_DEFAULTS = {"Режим": "Авто", "Материал": "Алюминий"}
+LINE_MODES = ["Авто", "Вручную"]
+LINE_MATERIALS = ["Алюминий", "Медь"]
+
+
+def cable_candidates(voltage_kv, material):
+    """Справочный каталог кабелей до 35 кВ и проводов ВЛ выше 35 кВ."""
+    rho = 29.4 if material == "Алюминий" else 18.1
+    prefix = "Al" if material == "Алюминий" else "Cu"
+    if voltage_kv <= 1.0:
+        ratings = {
+            "Алюминий": [(16, 65), (25, 85), (35, 105), (50, 130), (70, 165),
+                         (95, 205), (120, 235), (150, 270), (185, 310),
+                         (240, 370), (300, 425)],
+            "Медь": [(16, 85), (25, 110), (35, 135), (50, 165), (70, 210),
+                     (95, 260), (120, 300), (150, 340), (185, 390),
+                     (240, 460), (300, 530)],
+        }[material]
+        return [{"name": f"Кабель {prefix} 0,6/1 кВ {section} мм²",
+                 "r": rho / section, "x": 0.08, "c": 250.0,
+                 "imax": ampacity, "section": section}
+                for section, ampacity in ratings]
+    if voltage_kv <= 35.0:
+        ratings = {
+            "Алюминий": [(35, 135), (50, 160), (70, 200), (95, 245),
+                         (120, 280), (150, 320), (185, 365), (240, 435),
+                         (300, 500), (400, 590), (500, 670), (630, 760)],
+            "Медь": [(35, 170), (50, 205), (70, 250), (95, 305),
+                     (120, 350), (150, 395), (185, 450), (240, 535),
+                     (300, 610), (400, 710), (500, 805), (630, 900)],
+        }[material]
+        return [{"name": f"СПЭ-кабель {prefix} 6–35 кВ {section} мм²",
+                 "r": rho / section, "x": 0.10, "c": 200.0,
+                 "imax": ampacity, "section": section}
+                for section, ampacity in ratings]
+
+    if voltage_kv <= 150:
+        bundle, minimum = 1, 70
+    elif voltage_kv <= 220:
+        bundle, minimum = 1, 240
+    elif voltage_kv <= 330:
+        bundle, minimum = 2, 300
+    elif voltage_kv <= 500:
+        bundle, minimum = 3, 300
+    elif voltage_kv <= 750:
+        bundle, minimum = 5, 300
+    else:
+        bundle, minimum = 8, 330
+    base = [(70, 265), (95, 330), (120, 390), (150, 450), (185, 510),
+            (240, 605), (300, 710), (330, 760), (400, 860),
+            (500, 960), (600, 1050)]
+    result = []
+    for section, ampacity in base:
+        if section < minimum:
+            continue
+        kind = "АС" if material == "Алюминий" else "М"
+        name = f"{bundle}×{kind}-{section}" if bundle > 1 else f"{kind}-{section}"
+        result.append({
+            "name": f"Провод {name}",
+            "r": (rho / section) / bundle,
+            "x": 0.40 if bundle == 1 else 0.32,
+            "c": 9.5 + 1.5 * (bundle - 1),
+            "imax": ampacity * bundle * (1.10 if material == "Медь" else 1.0),
+            "section": section * bundle,
+        })
+    return result
+
+
+def select_cable(voltage_kv, required_current_a, material, largest=False):
+    if material not in LINE_MATERIALS:
+        raise ValueError("Материал линии должен быть «Алюминий» или «Медь».")
+    candidates = cable_candidates(voltage_kv, material)
+    if not candidates:
+        raise ValueError(f"Нет кабеля или провода для напряжения {voltage_kv:g} кВ.")
+    if largest:
+        return candidates[-1], False
+    for item in candidates:
+        if item["imax"] >= required_current_a:
+            return item, False
+    return candidates[-1], True
+
+
+def apply_auto_cables(net, reserve=1.25):
+    selected = []
+    for i, line in net.line.iterrows():
+        if not bool(line.get("auto_select", False)):
+            selected.append("Вручную")
+            continue
+        current_a = float(net.res_line.at[i, "i_ka"]) * 1000
+        voltage_kv = float(net.bus.at[int(line["from_bus"]), "vn_kv"])
+        spec, insufficient = select_cable(
+            voltage_kv, current_a * reserve, str(line["material"]))
+        net.line.at[i, "r_ohm_per_km"] = spec["r"]
+        net.line.at[i, "x_ohm_per_km"] = spec["x"]
+        net.line.at[i, "c_nf_per_km"] = spec["c"]
+        net.line.at[i, "max_i_ka"] = spec["imax"] / 1000
+        net.line.at[i, "selected_conductor"] = spec["name"]
+        net.line.at[i, "required_current_a"] = current_a * reserve
+        net.line.at[i, "auto_insufficient"] = bool(insufficient)
+        selected.append(spec["name"])
+    return tuple(selected)
 
 
 def migrate_project(data):
@@ -205,6 +306,11 @@ def migrate_project(data):
         for row in data["grid"]:
             if isinstance(row, dict):
                 for key, value in GRID_DEFAULTS.items():
+                    row.setdefault(key, value)
+    if isinstance(data, dict) and isinstance(data.get("lines"), list):
+        for row in data["lines"]:
+            if isinstance(row, dict):
+                for key, value in LINE_DEFAULTS.items():
                     row.setdefault(key, value)
     return data
 
@@ -259,13 +365,34 @@ def build(project):
             raise ValueError("Начало и конец линии должны отличаться.")
         if not math.isclose(net.bus.at[a, "vn_kv"], net.bus.at[b, "vn_kv"]):
             raise ValueError("Линия соединяет узлы разных напряжений. Используйте трансформатор.")
-        resistance, reactance = number(r, "R, Ом/км", minimum=0), number(r, "X, Ом/км", minimum=0)
+        mode = str(r.get("Режим", "Авто"))
+        if mode not in LINE_MODES:
+            raise ValueError("Режим линии должен быть «Авто» или «Вручную».")
+        auto_select = mode == "Авто"
+        material = str(r.get("Материал", "Алюминий"))
+        if auto_select:
+            spec, _ = select_cable(net.bus.at[a, "vn_kv"], 0, material, largest=True)
+            resistance, reactance = spec["r"], spec["x"]
+            capacitance, imax_a = spec["c"], spec["imax"]
+            selected_name = spec["name"]
+        else:
+            resistance = number(r, "R, Ом/км", minimum=0)
+            reactance = number(r, "X, Ом/км", minimum=0)
+            capacitance = number(r, "C, нФ/км", minimum=0)
+            imax_a = number(r, "Imax, А", positive=True)
+            selected_name = "Вручную"
         if resistance == reactance == 0:
             raise ValueError("R и X линии не могут одновременно равняться нулю.")
-        pp.create_line_from_parameters(net, from_bus=a, to_bus=b, length_km=number(r, "L, км", positive=True),
-            r_ohm_per_km=resistance, x_ohm_per_km=reactance, c_nf_per_km=number(r, "C, нФ/км", minimum=0),
-            max_i_ka=number(r, "Imax, А", positive=True)/1000, name=str(r["Название"]),
-            endtemp_degree=20)
+        line_index = pp.create_line_from_parameters(
+            net, from_bus=a, to_bus=b, length_km=number(r, "L, км", positive=True),
+            r_ohm_per_km=resistance, x_ohm_per_km=reactance,
+            c_nf_per_km=capacitance, max_i_ka=imax_a / 1000,
+            name=str(r["Название"]), endtemp_degree=20)
+        net.line.at[line_index, "auto_select"] = auto_select
+        net.line.at[line_index, "material"] = material
+        net.line.at[line_index, "selected_conductor"] = selected_name
+        net.line.at[line_index, "required_current_a"] = float("nan")
+        net.line.at[line_index, "auto_insufficient"] = False
         links[a].add(b); links[b].add(a)
     for r in project["trafos"]:
         a, b = bus(r, "ВН"), bus(r, "НН")
@@ -323,13 +450,22 @@ def build(project):
 def solve(project):
     net = build(project)
     pp.runpp(net)
+    previous = None
+    for _ in range(6):
+        selected = apply_auto_cables(net)
+        if not any(bool(value) for value in net.line.get("auto_select", [])):
+            break
+        if selected == previous:
+            break
+        previous = selected
+        pp.runpp(net)
     if not net.converged or not net.res_bus.vm_pu.map(math.isfinite).all():
         raise ValueError("Расчёт не сошёлся.")
     return net
 
 
 def short_circuit(project):
-    net = build(project)
+    net = solve(project)
     sc.calc_sc(net, case="max", fault="3ph", ip=True)
     result = net.res_bus_sc[["ikss_ka", "ip_ka", "skss_mw"]].copy()
     result.insert(0, "Название", net.bus["name"])
@@ -391,7 +527,7 @@ def main():
     if not require_login():
         return
     st.title("⚡ PowerFlow Studio")
-    st.caption("Версия 4.1 • полный справочник 35–1150 кВ • двух- и трёхобмоточные трансформаторы • КЗ")
+    st.caption("Версия 4.2 • авто/ручной ввод R, X, C • автоподбор кабеля/провода • трансформаторы • КЗ")
     if "project_v2" not in st.session_state:
         st.session_state.project_v2 = example()
         st.session_state.revision = 0
@@ -425,7 +561,8 @@ def main():
     for (key, columns), tab in zip(COLUMNS.items(), tabs[:-1]):
         with tab:
             if key == "lines":
-                st.caption("R и X задаются на километр; C — ёмкость на километр; Imax — допустимый ток. Эти параметры вводятся вручную.")
+                st.caption("Режим «Авто»: программа подбирает кабель/провод и R, X, C, Imax по току с запасом 25%. Режим «Вручную»: значения R, X, C и Imax вводятся вами.")
+                st.info("До 35 кВ выбирается кабель, выше 35 кВ — воздушный провод. Справочные токи зависят от прокладки, температуры и производителя; для рабочего проекта проверьте результат по каталогу изготовителя и требованиям ПУЭ.")
             if key == "generation":
                 st.caption("Генерация с заданными P и Q. Положительные P и Q означают выдачу мощности в сеть.")
             if key == "grid":
@@ -439,7 +576,12 @@ def main():
                 st.caption("Трёхобмоточные трансформаторы и автотрансформаторы: задайте разные узлы ВН, СН и НН.")
                 selected_class_3w = st.selectbox("Класс напряжения 3W, кВ", [110, 150, 220, 330, 500, 750, 1150])
                 st.dataframe(three_winding_catalog_frame(selected_class_3w), hide_index=True, width="stretch")
-            if key == "trafos":
+            if key == "lines":
+                config = {
+                    "Режим": st.column_config.SelectboxColumn(options=LINE_MODES, required=True),
+                    "Материал": st.column_config.SelectboxColumn(options=LINE_MATERIALS, required=True),
+                }
+            elif key == "trafos":
                 config = {"Тип": st.column_config.SelectboxColumn(options=types_2w, required=True)}
             elif key == "trafos3w":
                 config = {"Тип": st.column_config.SelectboxColumn(options=types_3w, required=True)}
@@ -520,9 +662,15 @@ def main():
             (net.res_trafo.loading_percent > 100).any() or
             (net.res_trafo3w.loading_percent > 100).any()):
         st.warning("Есть оборудование с загрузкой выше 100%.")
+    if "auto_insufficient" in net.line and net.line.auto_insufficient.astype(bool).any():
+        st.warning("Для одной или нескольких линий ток выше предела справочника. Требуется параллельная линия или индивидуальный расчёт.")
+    line_current_a = net.res_line.i_ka * 1000
+    line_imax_a = net.line.max_i_ka * 1000
+    line_reserve = ((line_imax_a / line_current_a) - 1) * 100
+    line_reserve = line_reserve.where(line_current_a > 0)
     tables = {
         "Напряжения узлов": pd.DataFrame({"ID": net.bus.index, "Название": net.bus.name, "U, кВ": net.res_bus.vm_pu * net.bus.vn_kv, "U, о.е.": net.res_bus.vm_pu, "Угол, °": net.res_bus.va_degree}),
-        "Линии": pd.DataFrame({"Название": net.line.name, "Ток, А": net.res_line.i_ka*1000, "Imax, А": net.line.max_i_ka*1000, "Потери P, кВт": net.res_line.pl_mw*1000, "Загрузка, %": net.res_line.loading_percent}),
+        "Линии": pd.DataFrame({"Название": net.line.name, "Кабель/провод": net.line.selected_conductor, "Материал": net.line.material, "Ток, А": line_current_a, "Imax, А": line_imax_a, "Запас, %": line_reserve, "Потери P, кВт": net.res_line.pl_mw*1000, "Загрузка, %": net.res_line.loading_percent}),
         "Трансформаторы 2W": pd.DataFrame({"Название": net.trafo.name, "Потери P, кВт": net.res_trafo.pl_mw*1000, "Загрузка, %": net.res_trafo.loading_percent}),
         "Трансформаторы 3W": pd.DataFrame({"Название": net.trafo3w.name,
             "Потери P, кВт": net.res_trafo3w.pl_mw*1000,
