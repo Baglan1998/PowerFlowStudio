@@ -596,21 +596,39 @@ def normalize(data):
 
 
 
-def require_login():
-    """Показывает форму входа и разрешает доступ после проверки данных."""
+def configured_users():
+    """Собирает пользователей из Secrets, сохраняя совместимость со старым [auth]."""
+    users = {}
     try:
         auth = st.secrets["auth"]
-        expected_username = str(auth["username"])
-        expected_password = str(auth["password"])
+        username = auth.get("username")
+        password = auth.get("password")
+        if username and password:
+            users[str(username)] = str(password)
     except Exception:
-        st.error("Вход ещё не настроен. Добавьте логин и пароль в Secrets приложения.")
+        pass
+    try:
+        for username, password in st.secrets["users"].items():
+            if username and password:
+                users[str(username)] = str(password)
+    except Exception:
+        pass
+    return users
+
+
+def require_login():
+    """Показывает форму входа и разрешает доступ после проверки данных."""
+    users = configured_users()
+    if not users:
+        st.error("Вход ещё не настроен. Добавьте пользователей в Secrets приложения.")
         return False
 
     if st.session_state.get("authenticated", False):
         with st.sidebar:
-            st.caption(f"Пользователь: {expected_username}")
+            st.caption(f"Пользователь: {st.session_state.get('authenticated_user', '')}")
             if st.button("Выйти", key="logout"):
                 st.session_state.authenticated = False
+                st.session_state.pop("authenticated_user", None)
                 st.rerun()
         return True
 
@@ -622,10 +640,14 @@ def require_login():
         submitted = st.form_submit_button("Войти", type="primary", width="stretch")
 
     if submitted:
-        username_ok = hmac.compare_digest(username, expected_username)
-        password_ok = hmac.compare_digest(password, expected_password)
-        if username_ok and password_ok:
+        expected_password = users.get(username)
+        password_ok = (
+            expected_password is not None and
+            hmac.compare_digest(password, expected_password)
+        )
+        if password_ok:
             st.session_state.authenticated = True
+            st.session_state.authenticated_user = username
             st.rerun()
         else:
             st.error("Неверный логин или пароль.")
