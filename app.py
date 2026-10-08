@@ -4,6 +4,10 @@ import json
 import math
 import re
 import zlib
+from datetime import datetime, timezone
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 import pandas as pd
 import pandapower as pp
 import pandapower.shortcircuit as sc
@@ -616,6 +620,119 @@ def configured_users():
     return users
 
 
+
+def supabase_config():
+    """Возвращает серверные параметры Supabase из Streamlit Secrets."""
+    try:
+        config = st.secrets["supabase"]
+        return str(config["url"]).rstrip("/"), str(config["service_role_key"])
+    except Exception:
+        return None
+
+
+def cloud_request(method, path, payload=None, prefer=None):
+    config = supabase_config()
+    if config is None:
+        raise ValueError("Подключение к облачному хранилищу ещё не настроено.")
+    base_url, key = config
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urlrequest.Request(base_url + path, data=data, headers=headers, method=method)
+    try:
+        with urlrequest.urlopen(request, timeout=15) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+    except (urlerror.HTTPError, urlerror.URLError, TimeoutError) as exc:
+        raise ValueError("Не удалось обратиться к облачному хранилищу. Проверьте Secrets Supabase.") from exc
+
+
+def cloud_clean(value):
+    """Заменяет NaN на null перед сохранением JSON в PostgreSQL."""
+    if isinstance(value, dict):
+        return {str(key): cloud_clean(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [cloud_clean(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def cloud_save_project(owner, name, project):
+    payload = {
+        "owner": owner,
+        "name": name.strip() or "Мой проект",
+        "project": cloud_clean(project),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    cloud_request(
+        "POST", "/rest/v1/powerflow_projects?on_conflict=owner,name", payload,
+        prefer="resolution=merge-duplicates,return=representation"
+    )
+
+
+def cloud_list_projects(owner):
+    owner_filter = urlparse.quote(owner, safe="")
+    return cloud_request(
+        "GET",
+        f"/rest/v1/powerflow_projects?owner=eq.{owner_filter}&select=name,updated_at&order=updated_at.desc"
+    ) or []
+
+
+def cloud_load_project(owner, name):
+    owner_filter = urlparse.quote(owner, safe="")
+    name_filter = urlparse.quote(name, safe="")
+    rows = cloud_request(
+        "GET",
+        f"/rest/v1/powerflow_projects?owner=eq.{owner_filter}&name=eq.{name_filter}&select=project&limit=1"
+    ) or []
+    if not rows:
+        raise ValueError("Сохранённый проект не найден.")
+    return rows[0]["project"]
+
+
+def cloud_project_controls(edited):
+    """Показывает раздельное по логинам облачное сохранение."""
+    with st.sidebar:
+        st.divider()
+        st.subheader("Облачные проекты")
+        if supabase_config() is None:
+            st.caption("Подключите Supabase в Secrets, чтобы сохранять проекты по пользователям.")
+            return
+        owner = str(st.session_state.get("authenticated_user", ""))
+        name_key = f"cloud_project_name_{owner}"
+        project_name = st.text_input("Название проекта", value="Мой проект", key=name_key)
+        if st.button("Сохранить в облако", key=f"cloud_save_{owner}"):
+            try:
+                cloud_save_project(owner, project_name, edited)
+                st.success("Проект сохранён для пользователя " + owner + ".")
+            except ValueError as exc:
+                st.error(str(exc))
+        try:
+            saved = cloud_list_projects(owner)
+        except ValueError as exc:
+            st.error(str(exc))
+            saved = []
+        if saved:
+            names = [item["name"] for item in saved]
+            selected_name = st.selectbox("Мои сохранённые проекты", names, key=f"cloud_select_{owner}")
+            if st.button("Открыть сохранённый проект", key=f"cloud_load_{owner}"):
+                try:
+                    data = normalize(cloud_load_project(owner, selected_name))
+                    st.session_state.project_v2 = data
+                    st.session_state.revision += 1
+                    st.session_state.pop("result_v2", None)
+                    st.rerun()
+                except (ValueError, TypeError, KeyError) as exc:
+                    st.error(str(exc))
+        else:
+            st.caption("У этого пользователя пока нет сохранённых проектов.")
+
 def require_login():
     """Показывает форму входа и разрешает доступ после проверки данных."""
     users = configured_users()
@@ -744,6 +861,7 @@ def main():
                 )
                 edited_frame = edited_frame.drop(columns=["Авто"])
             edited[key] = edited_frame[columns].dropna(how="all").to_dict("records")
+    cloud_project_controls(edited)
     with tabs[-2]:
         st.caption("Все 104 строки из исходного Excel-файла: двухобмоточные, трёхобмоточные трансформаторы и автотрансформаторы.")
         reference = full_transformer_reference()
