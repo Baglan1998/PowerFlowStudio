@@ -203,6 +203,25 @@ LINE_MODES = ["Авто", "Вручную"]
 LINE_MATERIALS = ["Алюминий", "Медь"]
 
 
+def software_comparison_frame():
+    """Сравнение текущих возможностей трёх инструментов."""
+    rows = [
+        {"Критерий": "Тип продукта", "PowerFlow Studio": "Веб-приложение", "RastrWin": "Профессиональный ПК", "pandapower": "Python-библиотека"},
+        {"Критерий": "Установившийся режим", "PowerFlow Studio": "Да", "RastrWin": "Да", "pandapower": "Да"},
+        {"Критерий": "КЗ", "PowerFlow Studio": "Только 3-фазное", "RastrWin": "Да, через RastrKZ", "pandapower": "3-, 2- и 1-фазное по IEC 60909"},
+        {"Критерий": "Трансформаторы 2W / 3W", "PowerFlow Studio": "Да + справочник 35–1150 кВ", "RastrWin": "Да", "pandapower": "Да"},
+        {"Критерий": "Подбор кабеля", "PowerFlow Studio": "Да: авто или вручную", "RastrWin": "Параметры вводятся в модель", "pandapower": "Через стандартные типы или код"},
+        {"Критерий": "Графическая схема", "PowerFlow Studio": "Автоматическая однолинейная", "RastrWin": "Развитые схемы и рисунки", "pandapower": "Через Python-библиотеки"},
+        {"Критерий": "Импорт / экспорт", "PowerFlow Studio": "JSON и CSV результатов", "RastrWin": "Промышленные форматы и CSV", "pandapower": "Таблицы pandas, Excel/JSON/SQL через Python"},
+        {"Критерий": "Оптимальный режим (OPF)", "PowerFlow Studio": "Нет", "RastrWin": "Есть в составе модулей", "pandapower": "Да"},
+        {"Критерий": "Оценка состояния", "PowerFlow Studio": "Нет", "RastrWin": "Есть в составе комплекса", "pandapower": "Да"},
+        {"Критерий": "Серийные / сценарные расчёты", "PowerFlow Studio": "Пока нет", "RastrWin": "Да", "pandapower": "Да, через Python"},
+        {"Критерий": "Кому подходит лучше", "PowerFlow Studio": "Учёба, курсовой, быстрая проверка", "RastrWin": "Проектирование и сложные ЭЭС", "pandapower": "Автоматизация, исследования, свои алгоритмы"},
+    ]
+    return pd.DataFrame(rows)
+
+
+
 # Расчётные данные КЛ 1–35 кВ на 1 км.
 # Источник: справочные материалы для курсовых проектов С. С. Ананичевой,
 # С. Н. Шелюга (приведены на powersystem.info). Значения R — при +20 °C.
@@ -634,8 +653,8 @@ def main():
     register_transformer_catalog(type_net)
     types_2w = sorted(type_net.std_types["trafo"])
     types_3w = sorted(THREE_WINDING_CATALOG)
-    tabs = st.tabs(labels + ["Полный справочник"])
-    for (key, columns), tab in zip(COLUMNS.items(), tabs[:-1]):
+    tabs = st.tabs(labels + ["Полный справочник", "Сравнение ПО"])
+    for (key, columns), tab in zip(COLUMNS.items(), tabs[:-2]):
         with tab:
             if key == "lines":
                 st.caption("Переключатель «Авто»: включён — программа подбирает кабель/провод и R, X, C, Imax по току с запасом 25%; выключен — вы вводите R, X, C и Imax вручную.")
@@ -689,12 +708,19 @@ def main():
                 )
                 edited_frame = edited_frame.drop(columns=["Авто"])
             edited[key] = edited_frame[columns].dropna(how="all").to_dict("records")
-    with tabs[-1]:
+    with tabs[-2]:
         st.caption("Все 104 строки из исходного Excel-файла: двухобмоточные, трёхобмоточные трансформаторы и автотрансформаторы.")
         reference = full_transformer_reference()
         section_title = st.selectbox("Раздел справочника", [item["title"] for item in reference])
         section = next(item for item in reference if item["title"] == section_title)
         st.dataframe(pd.DataFrame(section["rows"], columns=section["columns"]), hide_index=True, width="stretch")
+    with tabs[-1]:
+        st.subheader("Сравнение программ для расчёта ЭЭС")
+        st.caption("PowerFlow Studio использует pandapower как расчётное ядро, но даёт готовый русскоязычный веб-интерфейс.")
+        st.dataframe(software_comparison_frame(), hide_index=True, width="stretch")
+        st.info("Вывод: для учебных схем и быстрой проверки выбирайте PowerFlow Studio; для крупных производственных расчётов — RastrWin; для программирования, автоматизации и собственных алгоритмов — pandapower.")
+        st.caption("Возможности RastrWin приведены для программного комплекса и его модулей; состав лицензии может отличаться.")
+        st.markdown("[Документация pandapower](https://www.pandapower.org/about/) • [Материалы RastrWin](https://www.rastrwin.ru/en/Files/Alexandrov_RastrWin_6_.pdf)")
     st.download_button("Скачать проект JSON", json.dumps(edited, ensure_ascii=False, indent=2, allow_nan=True), "powerflow_project.json", "application/json")
     steady_button, sc_button = st.columns(2)
     if steady_button.button("Рассчитать режим", type="primary", width="stretch"):
