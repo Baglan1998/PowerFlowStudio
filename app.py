@@ -155,6 +155,7 @@ def transformer_catalog_frame(class_kv):
                 "ΔPк, кВт": item["pk_kw"],
                 "Pх, кВт": item["pfe_kw"],
                 "Iх, %": item["i0_percent"],
+                "Kтр (ВН/НН)": item["vn_hv_kv"] / item["vn_lv_kv"],
             })
     return pd.DataFrame(rows)
 
@@ -170,6 +171,8 @@ def three_winding_catalog_frame(class_kv):
                 "Uк В-Н, %": item["vk_lv_percent"], "Uк С-Н, %": item["vk_mv_percent"],
                 "ΔPк, кВт": item["pk_kw"], "Pх, кВт": item["pfe_kw"],
                 "Iх, %": item["i0_percent"],
+                "K ВН/СН": item["vn_hv_kv"] / item["vn_mv_kv"],
+                "K ВН/НН": item["vn_hv_kv"] / item["vn_lv_kv"],
             })
     return pd.DataFrame(rows)
 
@@ -649,12 +652,12 @@ def main():
             if key == "grid":
                 st.caption("Для КЗ задайте Sкз max внешней сети и отношение R/X. По умолчанию: 500 МВА и 0,1.")
             if key == "trafos":
-                st.caption("Выберите тип — Sном, напряжения, Uк, потери и ток холостого хода подставятся автоматически.")
+                st.caption("Выберите тип — Sном, напряжения, Uк, потери, ток холостого хода и коэффициент трансформации Kтр = UВН/UНН подставятся автоматически.")
                 with st.expander("Справочник двухобмоточных трансформаторов"):
                     selected_class = st.selectbox("Класс напряжения, кВ", [35, 110, 150, 220, 330, 500, 750, 1150])
                     st.dataframe(transformer_catalog_frame(selected_class), hide_index=True, width="stretch")
             if key == "trafos3w":
-                st.caption("Трёхобмоточные трансформаторы и автотрансформаторы: задайте разные узлы ВН, СН и НН.")
+                st.caption("Трёхобмоточные трансформаторы и автотрансформаторы: задайте разные узлы ВН, СН и НН. Коэффициенты K ВН/СН и K ВН/НН считаются автоматически.")
                 selected_class_3w = st.selectbox("Класс напряжения 3W, кВ", [110, 150, 220, 330, 500, 750, 1150])
                 st.dataframe(three_winding_catalog_frame(selected_class_3w), hide_index=True, width="stretch")
             editor_frame = pd.DataFrame(st.session_state.project_v2[key], columns=columns)
@@ -765,13 +768,28 @@ def main():
     line_reserve = ((line_imax_a / line_current_a) - 1) * 100
     line_reserve = line_reserve.where(line_current_a > 0)
     line_insulation_loss_kw = net.line.length_km * net.line.insulation_loss_kw_per_km
+    trafo_hv_kv = net.trafo["hv_bus"].map(net.bus["vn_kv"])
+    trafo_lv_kv = net.trafo["lv_bus"].map(net.bus["vn_kv"])
+    trafo_ratio = trafo_hv_kv / trafo_lv_kv
+    trafo3_hv_kv = net.trafo3w["hv_bus"].map(net.bus["vn_kv"])
+    trafo3_mv_kv = net.trafo3w["mv_bus"].map(net.bus["vn_kv"])
+    trafo3_lv_kv = net.trafo3w["lv_bus"].map(net.bus["vn_kv"])
     tables = {
         "Напряжения узлов": pd.DataFrame({"ID": net.bus.index, "Название": net.bus.name, "U, кВ": net.res_bus.vm_pu * net.bus.vn_kv, "U, о.е.": net.res_bus.vm_pu, "Угол, °": net.res_bus.va_degree}),
         "Линии": pd.DataFrame({"Название": net.line.name, "Кабель/провод": net.line.selected_conductor, "Материал": net.line.material, "Ток, А": line_current_a, "Imax, А": line_imax_a, "Запас, %": line_reserve, "Потери P, кВт": net.res_line.pl_mw*1000, "Потери изоляции, кВт (справ.)": line_insulation_loss_kw, "Загрузка, %": net.res_line.loading_percent}),
-        "Трансформаторы 2W": pd.DataFrame({"Название": net.trafo.name, "Потери P, кВт": net.res_trafo.pl_mw*1000, "Загрузка, %": net.res_trafo.loading_percent}),
-        "Трансформаторы 3W": pd.DataFrame({"Название": net.trafo3w.name,
+        "Трансформаторы 2W": pd.DataFrame({
+            "Название": net.trafo.name, "U ВН, кВ": trafo_hv_kv, "U НН, кВ": trafo_lv_kv,
+            "Kтр (ВН/НН)": trafo_ratio, "Потери P, кВт": net.res_trafo.pl_mw*1000,
+            "Загрузка, %": net.res_trafo.loading_percent
+        }),
+        "Трансформаторы 3W": pd.DataFrame({
+            "Название": net.trafo3w.name, "U ВН, кВ": trafo3_hv_kv,
+            "U СН, кВ": trafo3_mv_kv, "U НН, кВ": trafo3_lv_kv,
+            "K ВН/СН": trafo3_hv_kv / trafo3_mv_kv,
+            "K ВН/НН": trafo3_hv_kv / trafo3_lv_kv,
             "Потери P, кВт": net.res_trafo3w.pl_mw*1000,
-            "Загрузка, %": net.res_trafo3w.loading_percent}),
+            "Загрузка, %": net.res_trafo3w.loading_percent
+        }),
         "Внешняя сеть": pd.DataFrame({"P, кВт": net.res_ext_grid.p_mw*1000, "Q, квар": net.res_ext_grid.q_mvar*1000})}
     for pos, (label, frame) in enumerate(tables.items()):
         st.subheader(label)
