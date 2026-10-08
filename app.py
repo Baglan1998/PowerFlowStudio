@@ -777,6 +777,87 @@ def main():
         st.subheader(label)
         st.dataframe(frame, hide_index=True, width="stretch")
         st.download_button("Скачать CSV", frame.to_csv(index=False).encode("utf-8-sig"), f"results_{pos}.csv", "text/csv", key=f"csv{pos}")
+    with st.expander("Сравнение результатов: Pandapower ↔ RastrWin", expanded=False):
+        st.caption(
+            "Сначала рассчитайте ту же схему в RastrWin. Затем введите результаты "
+            "RastrWin в правые столбцы — отклонения и проценты вычисляются автоматически."
+        )
+        st.markdown("**Напряжения узлов**")
+        compare_buses_input = pd.DataFrame({
+            "ID": net.bus.index.to_list(),
+            "Узел": net.bus["name"].to_list(),
+            "Pandapower U, кВ": (net.res_bus.vm_pu * net.bus.vn_kv).to_list(),
+            "RastrWin U, кВ": [None] * len(net.bus),
+        })
+        compare_buses = st.data_editor(
+            compare_buses_input, hide_index=True, width="stretch",
+            key="compare_rastr_buses",
+            disabled=["ID", "Узел", "Pandapower U, кВ"],
+            column_config={
+                "RastrWin U, кВ": st.column_config.NumberColumn(
+                    "RastrWin U, кВ", min_value=0.0, format="%.5f"
+                )
+            },
+        )
+        compare_buses_result = compare_buses.copy()
+        pp_u = pd.to_numeric(compare_buses_result["Pandapower U, кВ"], errors="coerce")
+        rastr_u = pd.to_numeric(compare_buses_result["RastrWin U, кВ"], errors="coerce")
+        compare_buses_result["ΔU, кВ"] = pp_u - rastr_u
+        compare_buses_result["Отклонение U, %"] = (
+            compare_buses_result["ΔU, кВ"].abs() / rastr_u.abs() * 100
+        ).where(rastr_u.notna() & rastr_u.ne(0))
+        st.dataframe(compare_buses_result, hide_index=True, width="stretch")
+
+        st.markdown("**Токи и активные потери линий**")
+        compare_lines_input = pd.DataFrame({
+            "Линия": net.line["name"].to_list(),
+            "Pandapower I, А": line_current_a.to_list(),
+            "RastrWin I, А": [None] * len(net.line),
+            "Pandapower ΔP, кВт": (net.res_line.pl_mw * 1000).to_list(),
+            "RastrWin ΔP, кВт": [None] * len(net.line),
+        })
+        compare_lines = st.data_editor(
+            compare_lines_input, hide_index=True, width="stretch",
+            key="compare_rastr_lines",
+            disabled=["Линия", "Pandapower I, А", "Pandapower ΔP, кВт"],
+            column_config={
+                "RastrWin I, А": st.column_config.NumberColumn(
+                    "RastrWin I, А", min_value=0.0, format="%.5f"
+                ),
+                "RastrWin ΔP, кВт": st.column_config.NumberColumn(
+                    "RastrWin ΔP, кВт", min_value=0.0, format="%.5f"
+                ),
+            },
+        )
+        compare_lines_result = compare_lines.copy()
+        pp_i = pd.to_numeric(compare_lines_result["Pandapower I, А"], errors="coerce")
+        rastr_i = pd.to_numeric(compare_lines_result["RastrWin I, А"], errors="coerce")
+        pp_loss = pd.to_numeric(compare_lines_result["Pandapower ΔP, кВт"], errors="coerce")
+        rastr_loss = pd.to_numeric(compare_lines_result["RastrWin ΔP, кВт"], errors="coerce")
+        compare_lines_result["ΔI, А"] = pp_i - rastr_i
+        compare_lines_result["Отклонение I, %"] = (
+            compare_lines_result["ΔI, А"].abs() / rastr_i.abs() * 100
+        ).where(rastr_i.notna() & rastr_i.ne(0))
+        compare_lines_result["ΔP, кВт"] = pp_loss - rastr_loss
+        compare_lines_result["Отклонение ΔP, %"] = (
+            compare_lines_result["ΔP, кВт"].abs() / rastr_loss.abs() * 100
+        ).where(rastr_loss.notna() & rastr_loss.ne(0))
+        st.dataframe(compare_lines_result, hide_index=True, width="stretch")
+        st.caption(
+            "Формула: |Pandapower − RastrWin| / |RastrWin| × 100 %. "
+            "Если в RastrWin значение равно нулю, процент не показывается."
+        )
+        st.download_button(
+            "Скачать сравнение узлов CSV",
+            compare_buses_result.to_csv(index=False).encode("utf-8-sig"),
+            "comparison_buses_pandapower_rastrwin.csv", "text/csv", key="csv_compare_buses"
+        )
+        st.download_button(
+            "Скачать сравнение линий CSV",
+            compare_lines_result.to_csv(index=False).encode("utf-8-sig"),
+            "comparison_lines_pandapower_rastrwin.csv", "text/csv", key="csv_compare_lines"
+        )
+
     st.bar_chart(tables["Напряжения узлов"].set_index("ID")[["U, о.е."]])
 
 
