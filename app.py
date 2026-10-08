@@ -200,36 +200,104 @@ LINE_MODES = ["Авто", "Вручную"]
 LINE_MATERIALS = ["Алюминий", "Медь"]
 
 
+# Расчётные данные КЛ 1–35 кВ на 1 км.
+# Источник: справочные материалы для курсовых проектов С. С. Ананичевой,
+# С. Н. Шелюга (приведены на powersystem.info). Значения R — при +20 °C.
+CABLE_R_OHM_KM = {
+    10: {"Медь": 1.790, "Алюминий": 2.940},
+    16: {"Медь": 1.120, "Алюминий": 1.840},
+    25: {"Медь": 0.720, "Алюминий": 1.700},
+    35: {"Медь": 0.510, "Алюминий": 0.840},
+    50: {"Медь": 0.360, "Алюминий": 0.590},
+    70: {"Медь": 0.256, "Алюминий": 0.420},
+    95: {"Медь": 0.190, "Алюминий": 0.310},
+    120: {"Медь": 0.150, "Алюминий": 0.240},
+    150: {"Медь": 0.120, "Алюминий": 0.200},
+    185: {"Медь": 0.100, "Алюминий": 0.160},
+    240: {"Медь": 0.070, "Алюминий": 0.120},
+    300: {"Медь": 0.061, "Алюминий": 0.103},
+    400: {"Медь": 0.046, "Алюминий": 0.077},
+}
+CABLE_X_OHM_KM = {
+    1: {10: 0.073, 16: 0.068, 25: 0.066, 35: 0.064, 50: 0.063, 70: 0.061,
+        95: 0.060, 120: 0.060, 150: 0.059, 185: 0.059, 240: 0.058},
+    6: {10: 0.110, 16: 0.102, 25: 0.091, 35: 0.087, 50: 0.083, 70: 0.080,
+        95: 0.078, 120: 0.076, 150: 0.074, 185: 0.073, 240: 0.071},
+    10: {10: 0.122, 16: 0.113, 25: 0.099, 35: 0.095, 50: 0.090, 70: 0.086,
+         95: 0.083, 120: 0.081, 150: 0.079, 185: 0.077, 240: 0.075},
+    20: {25: 0.135, 35: 0.129, 50: 0.119, 70: 0.116, 95: 0.110, 120: 0.107,
+         150: 0.104, 185: 0.101, 240: 0.098, 300: 0.095, 400: 0.092},
+    35: {70: 0.137, 95: 0.126, 120: 0.120, 150: 0.116, 185: 0.113,
+         240: 0.111, 300: 0.097, 400: 0.094},
+}
+CABLE_INSULATION_LOSS_KW_KM = {
+    6: {10: 0.016, 16: 0.019, 25: 0.030, 35: 0.033, 50: 0.038, 70: 0.048,
+        95: 0.063, 120: 0.068, 150: 0.076, 185: 0.084, 240: 0.095},
+    10: {10: 0.038, 16: 0.042, 25: 0.063, 35: 0.078, 50: 0.087, 70: 0.098,
+         95: 0.113, 120: 0.123, 150: 0.134, 185: 0.146, 240: 0.191},
+    20: {25: 0.135, 35: 0.151, 50: 0.174, 70: 0.196, 95: 0.219, 120: 0.234,
+         150: 0.257, 185: 0.279, 240: 0.320},
+    35: {70: 0.461, 95: 0.508, 120: 0.532, 150: 0.600, 185: 0.623,
+         240: 0.813},
+}
+
+
+def cable_voltage_class(voltage_kv):
+    """Выбирает ближайший верхний класс напряжения из справочника КЛ."""
+    for value in (1, 6, 10, 20, 35):
+        if voltage_kv <= value:
+            return value
+    raise ValueError("Справочник кабелей действует для линий до 35 кВ.")
+
+
+def cable_reference_frame(voltage_kv):
+    """Таблица R, X и удельных потерь изоляции для отображения в приложении."""
+    voltage = cable_voltage_class(voltage_kv)
+    rows = []
+    for section in sorted(CABLE_R_OHM_KM):
+        reactance = CABLE_X_OHM_KM[voltage].get(section)
+        if reactance is None:
+            continue
+        rows.append({
+            "Сечение, мм²": section,
+            "R Cu, Ом/км": CABLE_R_OHM_KM[section]["Медь"],
+            "R Al, Ом/км": CABLE_R_OHM_KM[section]["Алюминий"],
+            "X, Ом/км": reactance,
+            "Потери изоляции, кВт/км": CABLE_INSULATION_LOSS_KW_KM.get(voltage, {}).get(section),
+        })
+    return pd.DataFrame(rows)
+
+
 def cable_candidates(voltage_kv, material):
-    """Справочный каталог кабелей до 35 кВ и проводов ВЛ выше 35 кВ."""
+    """Справочник кабелей 1–35 кВ и проводов ВЛ выше 35 кВ."""
     rho = 29.4 if material == "Алюминий" else 18.1
     prefix = "Al" if material == "Алюминий" else "Cu"
-    if voltage_kv <= 1.0:
+    if voltage_kv <= 35.0:
+        source_voltage = cable_voltage_class(voltage_kv)
         ratings = {
             "Алюминий": [(16, 65), (25, 85), (35, 105), (50, 130), (70, 165),
                          (95, 205), (120, 235), (150, 270), (185, 310),
-                         (240, 370), (300, 425)],
+                         (240, 370), (300, 425), (400, 500), (500, 670), (630, 760)],
             "Медь": [(16, 85), (25, 110), (35, 135), (50, 165), (70, 210),
                      (95, 260), (120, 300), (150, 340), (185, 390),
-                     (240, 460), (300, 530)],
+                     (240, 460), (300, 530), (400, 620), (500, 805), (630, 900)],
         }[material]
-        return [{"name": f"Кабель {prefix} 0,6/1 кВ {section} мм²",
-                 "r": rho / section, "x": 0.08, "c": 250.0,
-                 "imax": ampacity, "section": section}
-                for section, ampacity in ratings]
-    if voltage_kv <= 35.0:
-        ratings = {
-            "Алюминий": [(35, 135), (50, 160), (70, 200), (95, 245),
-                         (120, 280), (150, 320), (185, 365), (240, 435),
-                         (300, 500), (400, 590), (500, 670), (630, 760)],
-            "Медь": [(35, 170), (50, 205), (70, 250), (95, 305),
-                     (120, 350), (150, 395), (185, 450), (240, 535),
-                     (300, 610), (400, 710), (500, 805), (630, 900)],
-        }[material]
-        return [{"name": f"СПЭ-кабель {prefix} 6–35 кВ {section} мм²",
-                 "r": rho / section, "x": 0.10, "c": 200.0,
-                 "imax": ampacity, "section": section}
-                for section, ampacity in ratings]
+        result = []
+        for section, ampacity in ratings:
+            if section not in CABLE_X_OHM_KM[source_voltage]:
+                continue
+            result.append({
+                "name": f"КЛ {source_voltage} кВ {prefix} {section} мм²",
+                "r": CABLE_R_OHM_KM[section][material],
+                "x": CABLE_X_OHM_KM[source_voltage][section],
+                # В исходной справочной таблице C нет: оставлено типовое значение,
+                # которое при необходимости можно заменить в ручном режиме.
+                "c": 250.0 if source_voltage == 1 else 200.0,
+                "imax": ampacity,
+                "section": section,
+                "p_iso_kw_km": CABLE_INSULATION_LOSS_KW_KM.get(source_voltage, {}).get(section),
+            })
+        return result
 
     if voltage_kv <= 150:
         bundle, minimum = 1, 70
@@ -259,9 +327,9 @@ def cable_candidates(voltage_kv, material):
             "c": 9.5 + 1.5 * (bundle - 1),
             "imax": ampacity * bundle * (1.10 if material == "Медь" else 1.0),
             "section": section * bundle,
+            "p_iso_kw_km": None,
         })
     return result
-
 
 def select_cable(voltage_kv, required_current_a, material, largest=False):
     if material not in LINE_MATERIALS:
@@ -293,6 +361,9 @@ def apply_auto_cables(net, reserve=1.25):
         net.line.at[i, "max_i_ka"] = spec["imax"] / 1000
         net.line.at[i, "selected_conductor"] = spec["name"]
         net.line.at[i, "required_current_a"] = current_a * reserve
+        net.line.at[i, "insulation_loss_kw_per_km"] = (
+            spec["p_iso_kw_km"] if spec["p_iso_kw_km"] is not None else float("nan")
+        )
         net.line.at[i, "auto_insufficient"] = bool(insufficient)
         selected.append(spec["name"])
     return tuple(selected)
@@ -392,6 +463,9 @@ def build(project):
         net.line.at[line_index, "material"] = material
         net.line.at[line_index, "selected_conductor"] = selected_name
         net.line.at[line_index, "required_current_a"] = float("nan")
+        net.line.at[line_index, "insulation_loss_kw_per_km"] = (
+            spec["p_iso_kw_km"] if auto_select and spec["p_iso_kw_km"] is not None else float("nan")
+        )
         net.line.at[line_index, "auto_insufficient"] = False
         links[a].add(b); links[b].add(a)
     for r in project["trafos"]:
@@ -563,6 +637,13 @@ def main():
             if key == "lines":
                 st.caption("Переключатель «Авто»: включён — программа подбирает кабель/провод и R, X, C, Imax по току с запасом 25%; выключен — вы вводите R, X, C и Imax вручную.")
                 st.info("До 35 кВ выбирается кабель, выше 35 кВ — воздушный провод. Справочные токи зависят от прокладки, температуры и производителя; для рабочего проекта проверьте результат по каталогу изготовителя и требованиям ПУЭ.")
+                with st.expander("Справочник КЛ 1–35 кВ (на 1 км)"):
+                    cable_ref_voltage = st.selectbox(
+                        "Номинальное напряжение КЛ, кВ", [1, 6, 10, 20, 35],
+                        key="cable_reference_voltage"
+                    )
+                    st.dataframe(cable_reference_frame(cable_ref_voltage), hide_index=True, width="stretch")
+                    st.caption("R приведено для +20 °C. Потери изоляции — справочные; для конкретной марки кабеля уточняйте их по данным изготовителя. Ёмкость C в этой таблице не приведена и остаётся редактируемой в ручном режиме.")
             if key == "generation":
                 st.caption("Генерация с заданными P и Q. Положительные P и Q означают выдачу мощности в сеть.")
             if key == "grid":
@@ -683,9 +764,10 @@ def main():
     line_imax_a = net.line.max_i_ka * 1000
     line_reserve = ((line_imax_a / line_current_a) - 1) * 100
     line_reserve = line_reserve.where(line_current_a > 0)
+    line_insulation_loss_kw = net.line.length_km * net.line.insulation_loss_kw_per_km
     tables = {
         "Напряжения узлов": pd.DataFrame({"ID": net.bus.index, "Название": net.bus.name, "U, кВ": net.res_bus.vm_pu * net.bus.vn_kv, "U, о.е.": net.res_bus.vm_pu, "Угол, °": net.res_bus.va_degree}),
-        "Линии": pd.DataFrame({"Название": net.line.name, "Кабель/провод": net.line.selected_conductor, "Материал": net.line.material, "Ток, А": line_current_a, "Imax, А": line_imax_a, "Запас, %": line_reserve, "Потери P, кВт": net.res_line.pl_mw*1000, "Загрузка, %": net.res_line.loading_percent}),
+        "Линии": pd.DataFrame({"Название": net.line.name, "Кабель/провод": net.line.selected_conductor, "Материал": net.line.material, "Ток, А": line_current_a, "Imax, А": line_imax_a, "Запас, %": line_reserve, "Потери P, кВт": net.res_line.pl_mw*1000, "Потери изоляции, кВт (справ.)": line_insulation_loss_kw, "Загрузка, %": net.res_line.loading_percent}),
         "Трансформаторы 2W": pd.DataFrame({"Название": net.trafo.name, "Потери P, кВт": net.res_trafo.pl_mw*1000, "Загрузка, %": net.res_trafo.loading_percent}),
         "Трансформаторы 3W": pd.DataFrame({"Название": net.trafo3w.name,
             "Потери P, кВт": net.res_trafo3w.pl_mw*1000,
