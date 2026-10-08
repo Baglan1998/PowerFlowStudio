@@ -561,7 +561,7 @@ def main():
     for (key, columns), tab in zip(COLUMNS.items(), tabs[:-1]):
         with tab:
             if key == "lines":
-                st.caption("Режим «Авто»: программа подбирает кабель/провод и R, X, C, Imax по току с запасом 25%. Режим «Вручную»: значения R, X, C и Imax вводятся вами.")
+                st.caption("Переключатель «Авто»: включён — программа подбирает кабель/провод и R, X, C, Imax по току с запасом 25%; выключен — вы вводите R, X, C и Imax вручную.")
                 st.info("До 35 кВ выбирается кабель, выше 35 кВ — воздушный провод. Справочные токи зависят от прокладки, температуры и производителя; для рабочего проекта проверьте результат по каталогу изготовителя и требованиям ПУЭ.")
             if key == "generation":
                 st.caption("Генерация с заданными P и Q. Положительные P и Q означают выдачу мощности в сеть.")
@@ -576,9 +576,17 @@ def main():
                 st.caption("Трёхобмоточные трансформаторы и автотрансформаторы: задайте разные узлы ВН, СН и НН.")
                 selected_class_3w = st.selectbox("Класс напряжения 3W, кВ", [110, 150, 220, 330, 500, 750, 1150])
                 st.dataframe(three_winding_catalog_frame(selected_class_3w), hide_index=True, width="stretch")
+            editor_frame = pd.DataFrame(st.session_state.project_v2[key], columns=columns)
+            editor_columns = columns
             if key == "lines":
+                # Чекбокс работает как тумблер: ✓ — автоматический подбор, пусто — ручной ввод.
+                editor_frame["Авто"] = editor_frame["Режим"].fillna("Авто").astype(str).eq("Авто")
+                editor_columns = ["Название", "Начало", "Конец", "L, км", "Авто", "Материал",
+                                  "R, Ом/км", "X, Ом/км", "C, нФ/км", "Imax, А"]
                 config = {
-                    "Режим": st.column_config.SelectboxColumn(options=LINE_MODES, required=True),
+                    "Авто": st.column_config.CheckboxColumn(
+                        "Авто", help="Вкл: автоподбор R, X, C и Imax. Выкл: ручной ввод.", default=True
+                    ),
                     "Материал": st.column_config.SelectboxColumn(options=LINE_MATERIALS, required=True),
                 }
             elif key == "trafos":
@@ -587,9 +595,16 @@ def main():
                 config = {"Тип": st.column_config.SelectboxColumn(options=types_3w, required=True)}
             else:
                 config = {}
-            edited[key] = st.data_editor(pd.DataFrame(st.session_state.project_v2[key], columns=columns),
-                key=f"{key}_{st.session_state.revision}", num_rows="dynamic", hide_index=True,
-                width="stretch", column_config=config).dropna(how="all").to_dict("records")
+            edited_frame = st.data_editor(
+                editor_frame, key=f"{key}_{st.session_state.revision}", num_rows="dynamic",
+                hide_index=True, width="stretch", column_config=config, column_order=editor_columns
+            )
+            if key == "lines":
+                edited_frame["Режим"] = edited_frame["Авто"].fillna(True).map(
+                    {True: "Авто", False: "Вручную"}
+                )
+                edited_frame = edited_frame.drop(columns=["Авто"])
+            edited[key] = edited_frame[columns].dropna(how="all").to_dict("records")
     with tabs[-1]:
         st.caption("Все 104 строки из исходного Excel-файла: двухобмоточные, трёхобмоточные трансформаторы и автотрансформаторы.")
         reference = full_transformer_reference()
