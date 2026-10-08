@@ -198,6 +198,17 @@ COLUMNS = {
     "generation": ["Название", "Узел", "P, кВт", "Q, квар"],
 }
 GRID_DEFAULTS = {"Sкз max, МВА": 500.0, "R/X сети": 0.1}
+TRANSFORMER_VOLTAGE_TOLERANCE = 0.05  # ±5 % от номинального напряжения
+
+
+def transformer_voltage_matches(bus_voltage_kv, transformer_voltage_kv):
+    """Допускает отличие номинального напряжения узла от трансформатора до ±5 %."""
+    return math.isclose(
+        float(bus_voltage_kv), float(transformer_voltage_kv),
+        rel_tol=TRANSFORMER_VOLTAGE_TOLERANCE, abs_tol=1e-9
+    )
+
+
 LINE_DEFAULTS = {"Режим": "Авто", "Материал": "Алюминий"}
 LINE_MODES = ["Авто", "Вручную"]
 LINE_MATERIALS = ["Алюминий", "Медь"]
@@ -496,8 +507,10 @@ def build(project):
         if typ not in net.std_types["trafo"]:
             raise ValueError(f"Неизвестный тип трансформатора: {typ}.")
         spec = net.std_types["trafo"][typ]
-        if a == b or not math.isclose(net.bus.at[a, "vn_kv"], spec["vn_hv_kv"]) or not math.isclose(net.bus.at[b, "vn_kv"], spec["vn_lv_kv"]):
-            raise ValueError("Напряжения узлов ВН и НН должны соответствовать типу трансформатора.")
+        if (a == b or
+                not transformer_voltage_matches(net.bus.at[a, "vn_kv"], spec["vn_hv_kv"]) or
+                not transformer_voltage_matches(net.bus.at[b, "vn_kv"], spec["vn_lv_kv"])):
+            raise ValueError("Напряжения узлов ВН и НН должны быть в пределах ±5 % от номинала трансформатора.")
         pp.create_transformer(net, hv_bus=a, lv_bus=b, std_type=typ, name=str(r["Название"]))
         links[a].add(b); links[b].add(a)
     for r in project["trafos3w"]:
@@ -508,8 +521,9 @@ def build(project):
         spec = THREE_WINDING_CATALOG[typ]
         expected = (spec["vn_hv_kv"], spec["vn_mv_kv"], spec["vn_lv_kv"])
         actual = (net.bus.at[a, "vn_kv"], net.bus.at[b, "vn_kv"], net.bus.at[c, "vn_kv"])
-        if len({a, b, c}) != 3 or any(not math.isclose(x, y) for x, y in zip(actual, expected)):
-            raise ValueError("Напряжения узлов ВН, СН и НН должны соответствовать типу трёхобмоточного трансформатора.")
+        if len({a, b, c}) != 3 or any(
+                not transformer_voltage_matches(x, y) for x, y in zip(actual, expected)):
+            raise ValueError("Напряжения узлов ВН, СН и НН должны быть в пределах ±5 % от номиналов трансформатора.")
         vkr = spec["pk_kw"] / (spec["sn_mva"] * 30.0)
         pp.create_transformer3w_from_parameters(
             net, hv_bus=a, mv_bus=b, lv_bus=c,
@@ -671,12 +685,12 @@ def main():
             if key == "grid":
                 st.caption("Для КЗ задайте Sкз max внешней сети и отношение R/X. По умолчанию: 500 МВА и 0,1.")
             if key == "trafos":
-                st.caption("Выберите тип — Sном, напряжения, Uк, потери, ток холостого хода и коэффициент трансформации Kтр = UВН/UНН подставятся автоматически.")
+                st.caption("Выберите тип — Sном, напряжения, Uк, потери, ток холостого хода и коэффициент трансформации Kтр = UВН/UНН подставятся автоматически. Для напряжений узлов допускается ±5 % от номинала трансформатора.")
                 with st.expander("Справочник двухобмоточных трансформаторов"):
                     selected_class = st.selectbox("Класс напряжения, кВ", [35, 110, 150, 220, 330, 500, 750, 1150])
                     st.dataframe(transformer_catalog_frame(selected_class), hide_index=True, width="stretch")
             if key == "trafos3w":
-                st.caption("Трёхобмоточные трансформаторы и автотрансформаторы: задайте разные узлы ВН, СН и НН. Коэффициенты K ВН/СН и K ВН/НН считаются автоматически.")
+                st.caption("Трёхобмоточные трансформаторы и автотрансформаторы: задайте разные узлы ВН, СН и НН. Коэффициенты K ВН/СН и K ВН/НН считаются автоматически; для напряжений узлов допускается ±5 % от номинала.")
                 selected_class_3w = st.selectbox("Класс напряжения 3W, кВ", [110, 150, 220, 330, 500, 750, 1150])
                 st.dataframe(three_winding_catalog_frame(selected_class_3w), hide_index=True, width="stretch")
             editor_frame = pd.DataFrame(st.session_state.project_v2[key], columns=columns)
