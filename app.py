@@ -1,4 +1,5 @@
 import base64
+import hmac
 import json
 import math
 import re
@@ -348,8 +349,47 @@ def normalize(data):
     return data
 
 
+
+def require_login():
+    """Показывает форму входа и разрешает доступ после проверки данных."""
+    try:
+        auth = st.secrets["auth"]
+        expected_username = str(auth["username"])
+        expected_password = str(auth["password"])
+    except Exception:
+        st.error("Вход ещё не настроен. Добавьте логин и пароль в Secrets приложения.")
+        return False
+
+    if st.session_state.get("authenticated", False):
+        with st.sidebar:
+            st.caption(f"Пользователь: {expected_username}")
+            if st.button("Выйти", key="logout"):
+                st.session_state.authenticated = False
+                st.rerun()
+        return True
+
+    st.title("🔐 PowerFlow Studio")
+    st.caption("Введите логин и пароль для доступа к приложению.")
+    with st.form("login_form"):
+        username = st.text_input("Логин")
+        password = st.text_input("Пароль", type="password")
+        submitted = st.form_submit_button("Войти", type="primary", width="stretch")
+
+    if submitted:
+        username_ok = hmac.compare_digest(username, expected_username)
+        password_ok = hmac.compare_digest(password, expected_password)
+        if username_ok and password_ok:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Неверный логин или пароль.")
+    return False
+
+
 def main():
     st.set_page_config(page_title="PowerFlow Studio", page_icon="⚡", layout="wide")
+    if not require_login():
+        return
     st.title("⚡ PowerFlow Studio")
     st.caption("Версия 4.1 • полный справочник 35–1150 кВ • двух- и трёхобмоточные трансформаторы • КЗ")
     if "project_v2" not in st.session_state:
