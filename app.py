@@ -1,3 +1,4 @@
+# Release 4.2: auto/manual line input and cable selection
 import base64
 import hmac
 import json
