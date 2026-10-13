@@ -1,4 +1,4 @@
-# Release 4.2: auto/manual line input and cable selection
+# Release 4.3: B susceptance input and auto/manual line selection
 import base64
 import hmac
 import json
@@ -186,7 +186,7 @@ def example():
     return {
         "buses": [{"ID": 1, "Название": "Bus 1", "Uном, кВ": 20.0}, {"ID": 2, "Название": "Bus 2", "Uном, кВ": 0.4}, {"ID": 3, "Название": "Bus 3", "Uном, кВ": 0.4}],
         "grid": [{"Узел": 1, "U, о.е.": 1.02, "Sкз max, МВА": 500.0, "R/X сети": 0.1}],
-        "lines": [{"Название": "Линия 1", "Начало": 2, "Конец": 3, "L, км": 0.1, "Режим": "Авто", "Материал": "Алюминий", "R, Ом/км": 0.642, "X, Ом/км": 0.083, "C, нФ/км": 210.0, "Imax, А": 142.0}],
+        "lines": [{"Название": "Линия 1", "Начало": 2, "Конец": 3, "L, км": 0.1, "Режим": "Авто", "Материал": "Алюминий", "R, Ом/км": 0.642, "X, Ом/км": 0.083, "B, мкСм/км": 65.973, "Imax, А": 142.0}],
         "trafos": [{"Название": "Трансформатор 1", "ВН": 1, "НН": 2, "Тип": "0.4 MVA 20/0.4 kV"}],
         "trafos3w": [],
         "loads": [{"Название": "Нагрузка 1", "Узел": 3, "P, кВт": 100.0, "Q, квар": 50.0}],
@@ -196,7 +196,7 @@ def example():
 COLUMNS = {
     "buses": ["ID", "Название", "Uном, кВ"],
     "grid": ["Узел", "U, о.е.", "Sкз max, МВА", "R/X сети"],
-    "lines": ["Название", "Начало", "Конец", "L, км", "Режим", "Материал", "R, Ом/км", "X, Ом/км", "C, нФ/км", "Imax, А"],
+    "lines": ["Название", "Начало", "Конец", "L, км", "Режим", "Материал", "R, Ом/км", "X, Ом/км", "B, мкСм/км", "Imax, А"],
     "trafos": ["Название", "ВН", "НН", "Тип"],
     "trafos3w": ["Название", "ВН", "СН", "НН", "Тип"],
     "loads": ["Название", "Узел", "P, кВт", "Q, квар"],
@@ -217,6 +217,17 @@ def transformer_voltage_matches(bus_voltage_kv, transformer_voltage_kv):
 LINE_DEFAULTS = {"Режим": "Авто", "Материал": "Алюминий"}
 LINE_MODES = ["Авто", "Вручную"]
 LINE_MATERIALS = ["Алюминий", "Медь"]
+FREQUENCY_HZ = 50.0
+
+
+def b_us_from_c_nf(c_nf):
+    """Переводит ёмкость C, нФ/км в проводимость B, мкСм/км при 50 Гц."""
+    return 2 * math.pi * FREQUENCY_HZ * float(c_nf) / 1000
+
+
+def c_nf_from_b_us(b_us):
+    """Переводит проводимость B, мкСм/км в ёмкость C, нФ/км для pandapower."""
+    return float(b_us) * 1000 / (2 * math.pi * FREQUENCY_HZ)
 
 
 def software_comparison_frame():
@@ -419,6 +430,13 @@ def migrate_project(data):
     if isinstance(data, dict) and isinstance(data.get("lines"), list):
         for row in data["lines"]:
             if isinstance(row, dict):
+                # Старые JSON-проекты хранили C, нФ/км. Переводим в B, мкСм/км.
+                if "B, мкСм/км" not in row and row.get("C, нФ/км") is not None:
+                    try:
+                        row["B, мкСм/км"] = round(b_us_from_c_nf(float(row["C, нФ/км"])), 3)
+                    except (TypeError, ValueError):
+                        pass
+                row.pop("C, нФ/км", None)
                 for key, value in LINE_DEFAULTS.items():
                     row.setdefault(key, value)
     return data
@@ -487,7 +505,7 @@ def build(project):
         else:
             resistance = number(r, "R, Ом/км", minimum=0)
             reactance = number(r, "X, Ом/км", minimum=0)
-            capacitance = number(r, "C, нФ/км", minimum=0)
+            capacitance = c_nf_from_b_us(number(r, "B, мкСм/км", minimum=0))
             imax_a = number(r, "Imax, А", positive=True)
             selected_name = "Вручную"
         if resistance == reactance == 0:
@@ -777,7 +795,7 @@ def main():
     if not require_login():
         return
     st.title("⚡ PowerFlow Studio")
-    st.caption("Версия 4.2 • авто/ручной ввод R, X, C • автоподбор кабеля/провода • трансформаторы • КЗ")
+    st.caption("Версия 4.3 • авто/ручной ввод R, X, B • автоподбор кабеля/провода • трансформаторы • КЗ")
     if "project_v2" not in st.session_state:
         st.session_state.project_v2 = example()
         st.session_state.revision = 0
@@ -811,7 +829,7 @@ def main():
     for (key, columns), tab in zip(COLUMNS.items(), tabs[:-2]):
         with tab:
             if key == "lines":
-                st.caption("Переключатель «Авто»: включён — программа подбирает кабель/провод и R, X, C, Imax по току с запасом 25%; выключен — вы вводите R, X, C и Imax вручную.")
+                st.caption("Переключатель «Авто»: включён — программа подбирает кабель/провод и R, X, B, Imax по току с запасом 25%; выключен — вы вводите R, X, B и Imax вручную.")
                 st.info("До 35 кВ выбирается кабель, выше 35 кВ — воздушный провод. Справочные токи зависят от прокладки, температуры и производителя; для рабочего проекта проверьте результат по каталогу изготовителя и требованиям ПУЭ.")
                 with st.expander("Справочник КЛ 1–35 кВ (на 1 км)"):
                     cable_ref_voltage = st.selectbox(
@@ -819,7 +837,7 @@ def main():
                         key="cable_reference_voltage"
                     )
                     st.dataframe(cable_reference_frame(cable_ref_voltage), hide_index=True, width="stretch")
-                    st.caption("R приведено для +20 °C. Потери изоляции — справочные; для конкретной марки кабеля уточняйте их по данным изготовителя. Ёмкость C в этой таблице не приведена и остаётся редактируемой в ручном режиме.")
+                    st.caption("R приведено для +20 °C. Потери изоляции — справочные; для конкретной марки кабеля уточняйте их по данным изготовителя. Проводимость B задаётся в таблице линий; для ручного режима вводите её по данным проекта или паспорта линии.")
             if key == "generation":
                 st.caption("Генерация с заданными P и Q. Положительные P и Q означают выдачу мощности в сеть.")
             if key == "grid":
@@ -839,10 +857,10 @@ def main():
                 # Чекбокс работает как тумблер: ✓ — автоматический подбор, пусто — ручной ввод.
                 editor_frame["Авто"] = editor_frame["Режим"].fillna("Авто").astype(str).eq("Авто")
                 editor_columns = ["Название", "Начало", "Конец", "L, км", "Авто", "Материал",
-                                  "R, Ом/км", "X, Ом/км", "C, нФ/км", "Imax, А"]
+                                  "R, Ом/км", "X, Ом/км", "B, мкСм/км", "Imax, А"]
                 config = {
                     "Авто": st.column_config.CheckboxColumn(
-                        "Авто", help="Вкл: автоподбор R, X, C и Imax. Выкл: ручной ввод.", default=True
+                        "Авто", help="Вкл: автоподбор R, X, B и Imax. Выкл: ручной ввод.", default=True
                     ),
                     "Материал": st.column_config.SelectboxColumn(options=LINE_MATERIALS, required=True),
                 }
