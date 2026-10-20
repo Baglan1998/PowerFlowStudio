@@ -5,6 +5,7 @@ import json
 import math
 import re
 import zlib
+from io import BytesIO
 from datetime import datetime, timezone
 from urllib import error as urlerror
 from urllib import parse as urlparse
@@ -228,6 +229,48 @@ def b_us_from_c_nf(c_nf):
 def c_nf_from_b_us(b_us):
     """Переводит проводимость B, мкСм/км в ёмкость C, нФ/км для pandapower."""
     return float(b_us) * 1000 / (2 * math.pi * FREQUENCY_HZ)
+
+
+def rastrwin_excel(project):
+    """Экспортирует таблицы сети в Excel для загрузки или сопоставления полей в RastrWin."""
+    buses = pd.DataFrame(project["buses"])
+    lines = pd.DataFrame(project["lines"])
+    trafos = pd.DataFrame(project["trafos"])
+    loads = pd.DataFrame(project["loads"])
+    generation = pd.DataFrame(project["generation"])
+
+    line_rows = pd.DataFrame(columns=["Тип ветви", "Название", "Начало", "Конец", "L, км", "R, Ом/км", "X, Ом/км", "B, мкСм/км", "Imax, А"])
+    if not lines.empty:
+        line_rows = lines.rename(columns={"Режим": "Режим ввода"})[
+            ["Название", "Начало", "Конец", "L, км", "R, Ом/км", "X, Ом/км", "B, мкСм/км", "Imax, А"]
+        ].copy()
+        line_rows.insert(0, "Тип ветви", "ЛЭП")
+
+    trafo_rows = pd.DataFrame(columns=["Тип ветви", "Название", "Начало", "Конец", "Тип трансформатора"])
+    if not trafos.empty:
+        trafo_rows = trafos.rename(columns={"ВН": "Начало", "НН": "Конец", "Тип": "Тип трансформатора"})[
+            ["Название", "Начало", "Конец", "Тип трансформатора"]
+        ].copy()
+        trafo_rows.insert(0, "Тип ветви", "Трансформатор 2W")
+
+    branches = pd.concat([line_rows, trafo_rows], ignore_index=True, sort=False)
+    instruction = pd.DataFrame({
+        "Лист": ["Узлы", "Ветви", "Нагрузки", "Генерация"],
+        "Назначение": [
+            "Сопоставьте ID, название и номинальное напряжение с таблицей «Узлы» RastrWin.",
+            "ЛЭП и трансформаторы. При импорте RastrWin сопоставьте Начало/Конец с номерами узлов.",
+            "P и Q нагрузки. Единицы в PowerFlow Studio: кВт и квар.",
+            "P и Q генерации. Единицы в PowerFlow Studio: кВт и квар.",
+        ],
+    })
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        buses.to_excel(writer, sheet_name="Узлы", index=False)
+        branches.to_excel(writer, sheet_name="Ветви", index=False)
+        loads.to_excel(writer, sheet_name="Нагрузки", index=False)
+        generation.to_excel(writer, sheet_name="Генерация", index=False)
+        instruction.to_excel(writer, sheet_name="Инструкция", index=False)
+    return output.getvalue()
 
 
 def software_comparison_frame():
@@ -795,7 +838,7 @@ def main():
     if not require_login():
         return
     st.title("⚡ PowerFlow Studio")
-    st.caption("Версия 4.3 • авто/ручной ввод R, X, B • автоподбор кабеля/провода • трансформаторы • КЗ")
+    st.caption("Версия 4.4 • экспорт Excel для RastrWin • авто/ручной ввод R, X, B • трансформаторы • КЗ")
     if "project_v2" not in st.session_state:
         st.session_state.project_v2 = example()
         st.session_state.revision = 0
@@ -894,7 +937,20 @@ def main():
         st.info("Вывод: для учебных схем и быстрой проверки выбирайте PowerFlow Studio; для крупных производственных расчётов — RastrWin; для программирования, автоматизации и собственных алгоритмов — pandapower.")
         st.caption("Возможности RastrWin приведены для программного комплекса и его модулей; состав лицензии может отличаться.")
         st.markdown("[Документация pandapower](https://www.pandapower.org/about/) • [Материалы RastrWin](https://www.rastrwin.ru/en/Files/Alexandrov_RastrWin_6_.pdf)")
-    st.download_button("Скачать проект JSON", json.dumps(edited, ensure_ascii=False, indent=2, allow_nan=True), "powerflow_project.json", "application/json")
+    export_json, export_rastr = st.columns(2)
+    export_json.download_button(
+        "Скачать проект JSON",
+        json.dumps(edited, ensure_ascii=False, indent=2, allow_nan=True),
+        "powerflow_project.json",
+        "application/json",
+    )
+    export_rastr.download_button(
+        "Скачать Excel для RastrWin",
+        rastrwin_excel(edited),
+        "powerflow_rastrwin.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Файл содержит листы Узлы, Ветви, Нагрузки и Генерация. В RastrWin сопоставьте столбцы при импорте Excel.",
+    )
     steady_button, sc_button = st.columns(2)
     if steady_button.button("Рассчитать режим", type="primary", width="stretch"):
         st.session_state.pop("result_v2", None)
