@@ -127,6 +127,16 @@ TRANSFORMER_CATALOG = {
     "АОДЦТ-2001000/1150/500 экв. (1150/500 кВ)": {"class_kv": 1150, "sn_mva": 2001.0, "vn_hv_kv": 1150.0, "vn_lv_kv": 500.0, "vk_percent": 11.5, "pk_kw": 3750.0, "pfe_kw": 1050.0, "i0_percent": 0.35},
 }
 TRANSFORMER_CATALOG.update(build_full_two_winding_catalog())
+
+def has_cis_transformer_marking(name):
+    """Оставляет заводские маркировки СНГ/ГОСТ, а не общие варианты MVA/kV."""
+    return bool(re.match(r"^\s*[А-ЯЁ]{2,}", str(name)))
+
+# Исключаем встроенные общие англоязычные типы pandapower и оставляем маркировки СНГ/ГОСТ.
+TRANSFORMER_CATALOG = {
+    name: item for name, item in TRANSFORMER_CATALOG.items()
+    if has_cis_transformer_marking(name)
+}
 THREE_WINDING_CATALOG = build_three_winding_catalog()
 
 
@@ -186,7 +196,7 @@ def three_winding_catalog_frame(class_kv):
 
 def example():
     return {
-        "buses": [{"ID": 1, "Название": "Bus 1", "Uном, кВ": 35.0}, {"ID": 2, "Название": "Bus 2", "Uном, кВ": 0.4}, {"ID": 3, "Название": "Bus 3", "Uном, кВ": 0.4}],
+        "buses": [{"ID": 1, "Название": "Узел 1", "Uном, кВ": 35.0}, {"ID": 2, "Название": "Узел 2", "Uном, кВ": 0.4}, {"ID": 3, "Название": "Узел 3", "Uном, кВ": 0.4}],
         "grid": [{"Узел": 1, "U, о.е.": 1.02, "Sкз max, МВА": 500.0, "R/X сети": 0.1}],
         "lines": [{"Название": "Линия 1", "Начало": 2, "Конец": 3, "L, км": 0.1, "Режим": "Авто", "Материал": "Алюминий", "R, Ом/км": 0.642, "X, Ом/км": 0.083, "B, мкСм/км": 65.973, "Imax, А": 142.0}],
         "trafos": [{"Название": "Трансформатор 1", "ВН": 1, "НН": 2, "Тип": "ТМН-630/35 (35/0.4 кВ)"}],
