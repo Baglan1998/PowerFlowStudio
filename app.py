@@ -137,7 +137,10 @@ TRANSFORMER_CATALOG = {
     name: item for name, item in TRANSFORMER_CATALOG.items()
     if has_cis_transformer_marking(name)
 }
-THREE_WINDING_CATALOG = build_three_winding_catalog()
+THREE_WINDING_CATALOG = {
+    name: item for name, item in build_three_winding_catalog().items()
+    if has_cis_transformer_marking(name)
+}
 
 
 def pandapower_trafo_data(item):
