@@ -3,3 +3,4 @@ pandas
 numpy
 plotly
 pandapower==3.2.2
+openpyxl
