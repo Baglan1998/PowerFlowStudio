@@ -6,6 +6,7 @@ import math
 import re
 import zlib
 from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 from datetime import datetime, timezone
 from urllib import error as urlerror
 from urllib import parse as urlparse
@@ -185,10 +186,10 @@ def three_winding_catalog_frame(class_kv):
 
 def example():
     return {
-        "buses": [{"ID": 1, "Название": "Bus 1", "Uном, кВ": 20.0}, {"ID": 2, "Название": "Bus 2", "Uном, кВ": 0.4}, {"ID": 3, "Название": "Bus 3", "Uном, кВ": 0.4}],
+        "buses": [{"ID": 1, "Название": "Bus 1", "Uном, кВ": 35.0}, {"ID": 2, "Название": "Bus 2", "Uном, кВ": 0.4}, {"ID": 3, "Название": "Bus 3", "Uном, кВ": 0.4}],
         "grid": [{"Узел": 1, "U, о.е.": 1.02, "Sкз max, МВА": 500.0, "R/X сети": 0.1}],
         "lines": [{"Название": "Линия 1", "Начало": 2, "Конец": 3, "L, км": 0.1, "Режим": "Авто", "Материал": "Алюминий", "R, Ом/км": 0.642, "X, Ом/км": 0.083, "B, мкСм/км": 65.973, "Imax, А": 142.0}],
-        "trafos": [{"Название": "Трансформатор 1", "ВН": 1, "НН": 2, "Тип": "0.4 MVA 20/0.4 kV"}],
+        "trafos": [{"Название": "Трансформатор 1", "ВН": 1, "НН": 2, "Тип": "ТМН-630/35 (35/0.4 кВ)"}],
         "trafos3w": [],
         "loads": [{"Название": "Нагрузка 1", "Узел": 3, "P, кВт": 100.0, "Q, квар": 50.0}],
         "generation": [{"Название": "Генератор 1", "Узел": 3, "P, кВт": 0.0, "Q, квар": 0.0}],
@@ -229,6 +230,177 @@ def b_us_from_c_nf(c_nf):
 def c_nf_from_b_us(b_us):
     """Переводит проводимость B, мкСм/км в ёмкость C, нФ/км для pandapower."""
     return float(b_us) * 1000 / (2 * math.pi * FREQUENCY_HZ)
+
+
+def cis_transformer_type_for_voltages(hv_kv, lv_kv):
+    """Подбирает только СНГ/ГОСТ-маркировку для импортированного трансформатора."""
+    candidates = [
+        (name, item) for name, item in TRANSFORMER_CATALOG.items()
+        if transformer_voltage_matches(hv_kv, item["vn_hv_kv"])
+        and transformer_voltage_matches(lv_kv, item["vn_lv_kv"])
+    ]
+    if not candidates:
+        raise ValueError(
+            f"Для трансформатора {hv_kv:g}/{lv_kv:g} кВ нет типа СНГ/ГОСТ в справочнике."
+        )
+    return min(candidates, key=lambda pair: pair[1]["sn_mva"])[0]
+
+
+def rastrwin_csv_frames(project):
+    """Готовит таблицы обмена с RastrWin в соглашении CSV: узлы и ветви."""
+    buses = pd.DataFrame(project["buses"]).copy()
+    if buses.empty:
+        raise ValueError("Нельзя экспортировать пустую сеть.")
+    buses["ID"] = buses["ID"].astype(int)
+    bus_ids = set(buses["ID"])
+    nodes = pd.DataFrame({
+        "ny": buses["ID"],
+        "name": buses["Название"].astype(str),
+        "uhom": buses["Uном, кВ"],
+        "tip": 1,
+        "pg": 0.0, "qg": 0.0, "pn": 0.0, "qn": 0.0,
+        "vzd": 1.0, "qmin": "", "qmax": "",
+    })
+    grid = project.get("grid", [])
+    for row in grid:
+        bus_id = int(row["Узел"])
+        if bus_id in bus_ids:
+            mask = nodes["ny"] == bus_id
+            nodes.loc[mask, "tip"] = 0
+            nodes.loc[mask, "vzd"] = float(row["U, о.е."])
+    for row in project.get("loads", []):
+        bus_id = int(row["Узел"])
+        mask = nodes["ny"] == bus_id
+        if mask.any():
+            nodes.loc[mask, "pn"] += float(row["P, кВт"]) / 1000
+            nodes.loc[mask, "qn"] += float(row["Q, квар"]) / 1000
+    for row in project.get("generation", []):
+        bus_id = int(row["Узел"])
+        mask = nodes["ny"] == bus_id
+        if mask.any():
+            nodes.loc[mask, "pg"] += float(row["P, кВт"]) / 1000
+            nodes.loc[mask, "qg"] += float(row["Q, квар"]) / 1000
+            if int(nodes.loc[mask, "tip"].iloc[0]) != 0:
+                nodes.loc[mask, "tip"] = 1
+    branches = []
+    for index, row in enumerate(project.get("lines", []), start=1):
+        length = float(row["L, км"])
+        branches.append({
+            "ip": int(row["Начало"]), "iq": int(row["Конец"]), "np": index,
+            "name": str(row["Название"]), "tip": 0,
+            "r": float(row["R, Ом/км"]) * length,
+            "x": float(row["X, Ом/км"]) * length,
+            "b": float(row["B, мкСм/км"]) * length,
+            "g": 0.0, "ktr": 1.0, "kti": 0.0, "sta": 1,
+        })
+    offset = len(branches)
+    for number, row in enumerate(project.get("trafos", []), start=1):
+        item = TRANSFORMER_CATALOG.get(str(row["Тип"]))
+        if item is None:
+            raise ValueError(f"Неизвестный тип трансформатора: {row['Тип']}.")
+        z_base = item["vn_hv_kv"] ** 2 / item["sn_mva"]
+        r_pu = item["pk_kw"] / (item["sn_mva"] * 1000)
+        z_pu = item["vk_percent"] / 100
+        x_pu = math.sqrt(max(z_pu ** 2 - r_pu ** 2, 0))
+        branches.append({
+            "ip": int(row["ВН"]), "iq": int(row["НН"]), "np": offset + number,
+            "name": str(row["Название"]), "tip": 1,
+            "r": r_pu * z_base, "x": x_pu * z_base, "b": 0.0, "g": 0.0,
+            "ktr": item["vn_hv_kv"] / item["vn_lv_kv"], "kti": 0.0, "sta": 1,
+        })
+    node_columns = ["ny", "name", "uhom", "tip", "pg", "qg", "pn", "qn", "vzd", "qmin", "qmax"]
+    branch_columns = ["ip", "iq", "np", "name", "tip", "r", "x", "b", "g", "ktr", "kti", "sta"]
+    return nodes[node_columns], pd.DataFrame(branches, columns=branch_columns)
+
+
+def rastrwin_csv_zip(project):
+    nodes, branches = rastrwin_csv_frames(project)
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("rastrwin_uzly.csv", nodes.to_csv(index=False, sep=";", encoding="utf-8-sig"))
+        archive.writestr("rastrwin_vetvi.csv", branches.to_csv(index=False, sep=";", encoding="utf-8-sig"))
+    return output.getvalue()
+
+
+def project_from_rastrwin_csv(uploaded_files):
+    """Импортирует пару CSV RastrWin по точным заголовкам узлов и ветвей."""
+    node_frame = None
+    branch_frame = None
+    for uploaded in uploaded_files:
+        try:
+            frame = pd.read_csv(BytesIO(uploaded.getvalue()), sep=";", encoding="utf-8-sig")
+        except Exception as exc:
+            raise ValueError(f"Не удалось прочитать файл «{uploaded.name}»: {exc}.")
+        columns = set(frame.columns)
+        if {"ny", "name", "uhom", "tip"}.issubset(columns):
+            if node_frame is not None:
+                raise ValueError("Выберите только один CSV узлов RastrWin.")
+            node_frame = frame
+        elif {"ip", "iq", "np", "name", "tip", "r", "x", "b"}.issubset(columns):
+            if branch_frame is not None:
+                raise ValueError("Выберите только один CSV ветвей RastrWin.")
+            branch_frame = frame
+        else:
+            raise ValueError(
+                f"Файл «{uploaded.name}» не распознан. Нужны заголовки ny,name,uhom,tip "
+                "для узлов или ip,iq,np,name,tip,r,x,b для ветвей."
+            )
+    if node_frame is None or branch_frame is None:
+        raise ValueError("Одновременно выберите два файла: CSV узлов и CSV ветвей RastrWin.")
+
+    required_nodes = {"ny", "name", "uhom", "tip", "pg", "qg", "pn", "qn", "vzd"}
+    if not required_nodes.issubset(node_frame.columns):
+        missing = ", ".join(sorted(required_nodes - set(node_frame.columns)))
+        raise ValueError(f"В CSV узлов отсутствуют столбцы: {missing}.")
+    ids = [int(value) for value in node_frame["ny"]]
+    if len(ids) != len(set(ids)):
+        raise ValueError("В CSV узлов повторяются номера ny.")
+    buses = [
+        {"ID": int(row.ny), "Название": str(row.name), "Uном, кВ": float(row.uhom)}
+        for row in node_frame.itertuples(index=False)
+    ]
+    grids = []
+    loads = []
+    generation = []
+    for row in node_frame.itertuples(index=False):
+        node_id = int(row.ny)
+        if int(row.tip) == 0:
+            grids.append({"Узел": node_id, "U, о.е.": float(row.vzd), "Sкз max, МВА": 500.0, "R/X сети": 0.1})
+        pn, qn = float(row.pn), float(row.qn)
+        pg, qg = float(row.pg), float(row.qg)
+        if pn != 0 or qn != 0:
+            loads.append({"Название": f"Нагрузка {node_id}", "Узел": node_id, "P, кВт": pn * 1000, "Q, квар": qn * 1000})
+        if pg != 0 or qg != 0:
+            generation.append({"Название": f"Генератор {node_id}", "Узел": node_id, "P, кВт": pg * 1000, "Q, квар": qg * 1000})
+    if len(grids) != 1:
+        raise ValueError("В CSV узлов должен быть ровно один балансирующий узел с tip=0.")
+    voltage_by_id = {int(row.ny): float(row.uhom) for row in node_frame.itertuples(index=False)}
+    lines, trafos = [], []
+    for row in branch_frame.itertuples(index=False):
+        start, end = int(row.ip), int(row.iq)
+        if start not in voltage_by_id or end not in voltage_by_id:
+            raise ValueError(f"Ветвь «{row.name}» ссылается на отсутствующий узел.")
+        if int(row.tip) == 0:
+            lines.append({
+                "Название": str(row.name), "Начало": start, "Конец": end, "L, км": 1.0,
+                "Режим": "Вручную", "Материал": "Алюминий",
+                "R, Ом/км": float(row.r), "X, Ом/км": float(row.x),
+                "B, мкСм/км": float(row.b), "Imax, А": 200.0,
+            })
+        elif int(row.tip) == 1:
+            hv, lv = voltage_by_id[start], voltage_by_id[end]
+            if hv < lv:
+                start, end, hv, lv = end, start, lv, hv
+            trafos.append({
+                "Название": str(row.name), "ВН": start, "НН": end,
+                "Тип": cis_transformer_type_for_voltages(hv, lv),
+            })
+        else:
+            raise ValueError(f"Для ветви «{row.name}» допустимы только tip=0 (линия) или tip=1 (трансформатор).")
+    return normalize({
+        "buses": buses, "grid": grids, "lines": lines, "trafos": trafos,
+        "trafos3w": [], "loads": loads, "generation": generation,
+    })
 
 
 def rastrwin_excel(project):
@@ -838,7 +1010,7 @@ def main():
     if not require_login():
         return
     st.title("⚡ PowerFlow Studio")
-    st.caption("Версия 4.4 • экспорт Excel для RastrWin • авто/ручной ввод R, X, B • трансформаторы • КЗ")
+    st.caption("Версия 4.5 • CSV импорт/экспорт RastrWin • справочник СНГ/ГОСТ • трансформаторы • КЗ")
     if "project_v2" not in st.session_state:
         st.session_state.project_v2 = example()
         st.session_state.revision = 0
@@ -846,6 +1018,16 @@ def main():
     with st.sidebar:
         st.header("Проект")
         upload = st.file_uploader("Открыть проект JSON", type=["json"])
+        rastr_files = st.file_uploader("Импорт CSV RastrWin: узлы и ветви", type=["csv"], accept_multiple_files=True, key="rastr_csv_import")
+        if st.button("Импорт CSV", disabled=not rastr_files):
+            try:
+                st.session_state.project_v2 = project_from_rastrwin_csv(rastr_files)
+                st.session_state.revision += 1
+                st.session_state.pop("result_v2", None)
+                st.success("CSV RastrWin импортирован. Схема создана.")
+                st.rerun()
+            except (ValueError, TypeError, KeyError) as exc:
+                st.error(f"Ошибка импорта CSV: {exc}")
         if st.button("Открыть файл", disabled=upload is None):
             try:
                 data = normalize(json.loads(upload.getvalue().decode("utf-8-sig")))
@@ -866,7 +1048,7 @@ def main():
     edited = {}
     type_net = pp.create_empty_network()
     register_transformer_catalog(type_net)
-    types_2w = sorted(type_net.std_types["trafo"])
+    types_2w = sorted(TRANSFORMER_CATALOG)
     types_3w = sorted(THREE_WINDING_CATALOG)
     tabs = st.tabs(labels + ["Полный справочник", "Сравнение ПО"])
     for (key, columns), tab in zip(COLUMNS.items(), tabs[:-2]):
@@ -945,11 +1127,11 @@ def main():
         "application/json",
     )
     export_rastr.download_button(
-        "Скачать Excel для RastrWin",
-        rastrwin_excel(edited),
-        "powerflow_rastrwin.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Файл содержит листы Узлы, Ветви, Нагрузки и Генерация. В RastrWin сопоставьте столбцы при импорте Excel.",
+        "Экспорт CSV для RastrWin",
+        rastrwin_csv_zip(edited),
+        "powerflow_rastrwin_csv.zip",
+        "application/zip",
+        help="ZIP содержит отдельные CSV «Узлы» и «Ветви» с разделителем ; и кодировкой UTF-8 с BOM.",
     )
     steady_button, sc_button = st.columns(2)
     if steady_button.button("Рассчитать режим", type="primary", width="stretch"):
