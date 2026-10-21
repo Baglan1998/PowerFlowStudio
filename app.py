@@ -948,6 +948,9 @@ def cloud_project_controls(edited):
     with st.sidebar:
         st.divider()
         st.subheader("Облачные проекты")
+        if st.session_state.get("guest_mode", False):
+            st.caption("Гостевой режим: облачное сохранение недоступно. Войдите под своим логином, чтобы сохранять проекты.")
+            return
         if supabase_config() is None:
             st.caption("Подключите Supabase в Secrets, чтобы сохранять проекты по пользователям.")
             return
@@ -981,40 +984,62 @@ def cloud_project_controls(edited):
             st.caption("У этого пользователя пока нет сохранённых проектов.")
 
 def require_login():
-    """Показывает форму входа и разрешает доступ после проверки данных."""
+    """Показывает вход по логину/паролю или гостевой доступ."""
     users = configured_users()
-    if not users:
-        st.error("Вход ещё не настроен. Добавьте пользователей в Secrets приложения.")
-        return False
 
     if st.session_state.get("authenticated", False):
         with st.sidebar:
-            st.caption(f"Пользователь: {st.session_state.get('authenticated_user', '')}")
+            user_label = st.session_state.get("authenticated_user", "")
+            if st.session_state.get("guest_mode", False):
+                user_label = "Гость"
+            st.caption(f"Пользователь: {user_label}")
             if st.button("Выйти", key="logout"):
                 st.session_state.authenticated = False
                 st.session_state.pop("authenticated_user", None)
+                st.session_state.pop("guest_mode", None)
                 st.rerun()
         return True
 
     st.title("🔐 PowerFlow Studio")
-    st.caption("Введите логин и пароль для доступа к приложению.")
-    with st.form("login_form"):
-        username = st.text_input("Логин")
-        password = st.text_input("Пароль", type="password")
-        submitted = st.form_submit_button("Войти", type="primary", width="stretch")
+    st.caption("Войдите под своим логином или откройте демонстрационную версию как гость.")
+    login_col, guest_col = st.columns(2)
 
-    if submitted:
-        expected_password = users.get(username)
-        password_ok = (
-            expected_password is not None and
-            hmac.compare_digest(password, expected_password)
-        )
-        if password_ok:
-            st.session_state.authenticated = True
-            st.session_state.authenticated_user = username
-            st.rerun()
+    with login_col:
+        st.subheader("Вход")
+        if users:
+            with st.form("login_form"):
+                username = st.text_input("Логин")
+                password = st.text_input("Пароль", type="password")
+                submitted = st.form_submit_button("Войти", type="primary", width="stretch")
+
+            if submitted:
+                expected_password = users.get(username)
+                password_ok = (
+                    expected_password is not None and
+                    hmac.compare_digest(password, expected_password)
+                )
+                if password_ok:
+                    st.session_state.authenticated = True
+                    st.session_state.authenticated_user = username
+                    st.session_state.pop("guest_mode", None)
+                    st.rerun()
+                else:
+                    st.error("Неверный логин или пароль.")
         else:
-            st.error("Неверный логин или пароль.")
+            st.info("Вход по логину пока не настроен.")
+
+    with guest_col:
+        st.subheader("Гостевой доступ")
+        st.write("Откройте пример сети без логина и пароля.")
+        if st.button("Войти как гость", width="stretch", key="guest_login"):
+            st.session_state.authenticated = True
+            st.session_state.authenticated_user = "guest"
+            st.session_state.guest_mode = True
+            st.session_state.project_v2 = example()
+            st.session_state.revision = 0
+            st.session_state.pop("result_v2", None)
+            st.rerun()
+        st.caption("В гостевом режиме доступны ввод данных, расчёт и экспорт. Сохранение в облако недоступно.")
     return False
 
 
